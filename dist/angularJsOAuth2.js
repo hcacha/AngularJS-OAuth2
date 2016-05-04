@@ -305,7 +305,9 @@
                         service.appendSignoutToken = true;
                     }
                 };
-
+                service.getSettings=function(){
+                    return settings;                    
+                };
                 return service;            
         };
     }]);
