@@ -19,7 +19,7 @@ However you can also use npm:
 
     npm install angularjs-oauth2 --save
 
-## Basic Usage
+## Basic Usage How To Directive 
 
 To authenticate an application running on localhost using Google's OAuth2 endpoint add the following HTML to, typically, your index.html page:
 
@@ -46,6 +46,21 @@ However the plugin is fully compatible with any Open ID Connect / OAuth 2 provid
             template='views/templates/signInButton.html'
             auto-generate-nonce="true">
     </oauth2> 
+## Basic usage on App Config
+app.config(['EndpointProvider',function(EndpointProvider){
+    
+    EndpointProvider.setOptions({
+            authorizationUrl: "https://localhost:44300/identity/connect/authorize",
+            signOutUrl: "https://localhost:44300/identity/connect/endsession",
+            appendSignoutToken: true,
+            signOutRedirectUrl: "http://localhost:9000",
+            clientId: "portal",
+            redirectUrl: "http://localhost:9000",            
+            responseType: "id_token token",
+            scope: "openid portaldashboard",
+            autoGenerateNonce: true            
+        });
+}]);  
 
 ## Options
 
