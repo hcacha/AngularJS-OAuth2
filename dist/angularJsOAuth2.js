@@ -1,26 +1,28 @@
 'use strict';
 
 (function () {
-    var tokenStorage = {
-        get: function ($window) { return $window.sessionStorage.getItem('token') },
-        set: function (token, $window) { $window.sessionStorage.setItem('token', token); },
-        clear: function ($window) { $window.sessionStorage.removeItem('token'); }
-    };
+        
+    angular.module('oauth2.services',[]).service('tokenService',['$window',function($window){
+        this.expired=function(token){
+            return (token && token.expires_at && new Date(token.expires_at) < new Date());
+        };
+        this.getSessionToken= function() {
+            var tokenString = this.tokenStorage.get($window);
+            var token = null;
+            if (tokenString && tokenString !== "null") {
+                token = JSON.parse(tokenString);
+                token.expires_at = new Date(token.expires_at);
+            }
+            return token;
+        };
+        this.tokenStorage = {
+            get: function () { return $window.sessionStorage.getItem('token') },
+            set: function (token) { $window.sessionStorage.setItem('token', token); },
+            clear: function () { $window.sessionStorage.removeItem('token'); }
+        };
+    }]);
 
-    function expired(token) {
-        return (token && token.expires_at && new Date(token.expires_at) < new Date());
-    };
-    function getSessionToken($window) {
-        var tokenString = tokenStorage.get($window);
-        var token = null;
-        if (tokenString && tokenString !== "null") {
-            token = JSON.parse(tokenString);
-            token.expires_at = new Date(token.expires_at);
-        }
-        return token;
-    }
-
-    angular.module('oauth2.accessToken', []).factory('AccessToken', ['$rootScope', '$location', '$window', function ($rootScope, $location, $window) {
+    angular.module('oauth2.accessToken', []).factory('AccessToken', ['$rootScope', '$location', '$window','tokenService', function ($rootScope, $location, $window,tokenService) {
         var service = {
             token: null
         };
@@ -38,7 +40,7 @@
             var token = getTokenFromHashParams(hash);
             if (token !== null) {
                 setExpiresAt(token);
-                tokenStorage.set(JSON.stringify(token), $window)
+                tokenService.tokenStorage.set(JSON.stringify(token), $window)
             }
             return token;
         }
@@ -101,7 +103,7 @@
             }
 
             if (service.token === null) {
-                service.token = getSessionToken($window);
+                service.token = tokenService.getSessionToken($window);
                 if (service.token === undefined) {
                     service.token = null;
                 }
@@ -132,7 +134,7 @@
             return service.token;
         };
         service.destroy = function () {
-            tokenStorage.clear($window)
+            tokenService.tokenStorage.clear($window)
             $window.sessionStorage.setItem('token', null);
             service.token = null;
         };
@@ -141,12 +143,12 @@
     }]);
 
     // Auth interceptor - if token is missing or has expired this broadcasts an authRequired event
-    angular.module('oauth2.interceptor', []).factory('OAuth2Interceptor', ['$rootScope', '$q', '$window', function ($rootScope, $q, $window) {
+    angular.module('oauth2.interceptor', []).factory('OAuth2Interceptor', ['$rootScope', '$q', '$window','tokenService', function ($rootScope, $q, $window,tokenService) {
 
         var service = {
             request: function (config) {
-                var token = getSessionToken($window);
-                if (expired(token)) {
+                var token = tokenService.getSessionToken($window);
+                if (tokenService.expired(token)) {
                     $rootScope.$broadcast('oauth2:authExpired', token);
                 }
                 else if (token) {
@@ -156,9 +158,9 @@
                 return config;
             },
             response: function (response) {
-                var token = getSessionToken($window);
+                var token = tokenService.getSessionToken($window);
                 if (response.status === 401) {
-                    if (expired(token)) {
+                    if (tokenService.expired(token)) {
                         $rootScope.$broadcast('oauth2:authExpired', token);
                     } else {
                         $rootScope.$broadcast('oauth2:unauthorized', token);
@@ -170,9 +172,9 @@
                 return response;
             },
             responseError: function (response) {
-                var token = getSessionToken($window);
+                var token = tokenService.getSessionToken($window);
                 if (response.status === 401) {
-                    if (expired(token)) {
+                    if (tokenService.expired(token)) {
                         $rootScope.$broadcast('oauth2:authExpired', token);
                     } else {
                         $rootScope.$broadcast('oauth2:unauthorized', token);
@@ -188,45 +190,51 @@
     }]);
 
     // Endpoint wrapper
-    angular.module('oauth2.endpoint', ['angular-md5']).provider('Endpoint', ['AccessToken', '$window', 'md5', '$rootScope', function (accessToken, $window, md5, $rootScope) {
+    angular.module('oauth2.endpoint', ['angular-md5']).provider('Endpoint',function () {
         var settings={            
         };
-        
         this.setOptions = function (options) {            
-            angular.extend(settings, options);
+            angular.extend(settings, options);            
         };
-        this.$get=function(){
+        this.$get=['AccessToken', '$window', 'md5', '$rootScope','tokenService','$location',function(accessToken, $window, md5, $rootScope,tokenService,$location){
                 var service = {
                     authorize: function () {
                         accessToken.destroy();
-                        $window.sessionStorage.setItem('verifyState', service.state);
+                        $window.sessionStorage.setItem('verifyState', settings.state);
                         window.location.replace(getAuthorizationUrl());
                     },
                     appendSignoutToken: false
                 };
+                if (!settings.nonce && settings.autoGenerateNonce) {
+                    settings.nonce = generateState();
+                }            
+                settings.state = settings.state || generateState();                
 
                 function getAuthorizationUrl(performSilently) {
-                    var url = service.authorizationUrl + '?' +
-                                    'client_id=' + encodeURIComponent(service.clientId) + '&' +
-                                    'redirect_uri=' + encodeURIComponent(performSilently ? service.silentTokenRedirectUrl : service.redirectUrl) + '&' +
-                                    'response_type=' + encodeURIComponent(service.responseType) + '&' +
-                                    'scope=' + encodeURIComponent(service.scope);
-                    if (service.nonce) {
-                        url += '&nonce=' + encodeURIComponent(service.nonce);
+                    var url = settings.authorizationUrl + '?' +
+                                    'client_id=' + encodeURIComponent(settings.clientId) + '&' +
+                                    'redirect_uri=' + encodeURIComponent(performSilently ? settings.silentTokenRedirectUrl : settings.redirectUrl) + '&' +
+                                    'response_type=' + encodeURIComponent(settings.responseType) + '&' +
+                                    'scope=' + encodeURIComponent(settings.scope);
+                    if (settings.nonce) {
+                        url += '&nonce=' + encodeURIComponent(settings.nonce);
                     }
-                    url += '&state=' + encodeURIComponent(service.state);
+                    url += '&state=' + encodeURIComponent(settings.state);
 
                     if (performSilently) {
                         url = url + "&prompt=none";
                     }
                     return url;
                 }
-
+                function generateState() {
+                    var text = ((Date.now() + Math.random()) * Math.random()).toString().replace(".", "");
+                    return md5.createHash(text);
+                }    
                 service.renewTokenSilently = function () {
                     function setupTokenSilentRenewInTheFuture() {
                         var frame = $window.document.createElement("iframe");
                         frame.style.display = "none";
-                        $window.sessionStorage.setItem('verifyState', service.state);
+                        $window.sessionStorage.setItem('verifyState', settings.state);
                         frame.src = getAuthorizationUrl(true);
                         function cleanup() {
                             $window.removeEventListener("message", message, false);
@@ -269,48 +277,50 @@
                 };
 
                 service.signOut = function (token) {
-                    if (service.signOutUrl && service.signOutUrl.length > 0) {
-                        var url = service.signOutUrl;
-                        if (service.appendSignoutToken) {
+                    if (settings.signOutUrl && settings.signOutUrl.length > 0) {
+                        var url = settings.signOutUrl;
+                        if (settings.appendSignoutToken) {
                             url = url + '?id_token_hint=' + token;
                         }
-                        if (service.signOutRedirectUrl && service.signOutRedirectUrl.length > 0) {
-                            url = url + (service.appendSignoutToken ? '&' : '?');
-                            url = url + 'post_logout_redirect_uri=' + encodeURIComponent(service.signOutRedirectUrl);
+                        if (settings.signOutRedirectUrl && settings.signOutRedirectUrl.length > 0) {
+                            url = url + (settings.appendSignoutToken ? '&' : '?');
+                            url = url + 'post_logout_redirect_uri=' + encodeURIComponent(settings.signOutRedirectUrl);
                         }
                         window.location.replace(url);
                     }
                 };
 
-                service.init = function (params) {
-                    function generateState() {
-                        var text = ((Date.now() + Math.random()) * Math.random()).toString().replace(".", "");
-                        return md5.createHash(text);
-                    }
-
+                service.init = function (params) {     
                     if (!params.nonce && params.autoGenerateNonce) {
                         params.nonce = generateState();
                     }
-                    service.nonce =settings.nonce|| params.nonce;
-                    service.clientId = settings.clientId || params.clientId;
-                    service.redirectUrl =settings.redirectUrl|| params.redirectUrl;
-                    service.scope =settings.scope|| params.scope;
-                    service.responseType =settings.responseType|| params.responseType;
-                    service.authorizationUrl =settings.authorizationUrl || params.authorizationUrl;
-                    service.signOutUrl =settings.signOutUrl|| params.signOutUrl;
-                    service.silentTokenRedirectUrl = settings.silentTokenRedirectUrl|| params.silentTokenRedirectUrl;
-                    service.signOutRedirectUrl = settings.signOutRedirectUrl||params.signOutRedirectUrl;
-                    service.state =settings.state || params.state || generateState();
-                    if (params.signOutAppendToken == 'true' || settings.signOutAppendToken) {
-                        service.appendSignoutToken = true;
+                    settings.nonce = params.nonce||settings.nonce;
+                    settings.clientId = params.clientId||settings.clientId;
+                    settings.redirectUrl = params.redirectUrl||settings.redirectUrl;
+                    settings.scope = params.scope||settings.scope;
+                    settings.responseType = params.responseType||settings.responseType;
+                    settings.authorizationUrl = params.authorizationUrl||settings.authorizationUrl;
+                    settings.signOutUrl = params.signOutUrl||settings.signOutUrl;
+                    settings.silentTokenRedirectUrl = params.silentTokenRedirectUrl||settings.silentTokenRedirectUrl;
+                    settings.signOutRedirectUrl = params.signOutRedirectUrl||settings.signOutRedirectUrl;
+                    settings.state = params.state || settings.state;
+                    if (params.signOutAppendToken == 'true') {
+                        settings.appendSignoutToken = true;
                     }
                 };
                 service.getSettings=function(){
                     return settings;                    
                 };
+                service.doAuth=function(event){
+                    if (!accessToken.get() || tokenService.expired(accessToken.get())) {
+		                event.preventDefault();
+		                $window.sessionStorage.setItem('oauthRedirectRoute', $location.path());
+		                service.authorize();
+		            }                    
+                };
                 return service;            
-        };
-    }]);
+        }];
+    });
 
     // Open ID directive
     angular.module('oauth2.directive', [])
@@ -320,7 +330,7 @@
 				    template: ""
 				})
 		}])
-		.directive('oauth2', ['$rootScope', '$http', '$window', '$location', '$templateCache', '$compile', '$parse', 'AccessToken', 'Endpoint', function ($rootScope, $http, $window, $location, $templateCache, $compile, $parse, accessToken, endpoint) {
+		.directive('oauth2', ['$rootScope', '$http', '$window', '$location', '$templateCache', '$compile', '$parse', 'AccessToken', 'Endpoint','tokenService', function ($rootScope, $http, $window, $location, $templateCache, $compile, $parse, accessToken, endpoint,tokenService) {
 		    var definition = {
 		        restrict: 'E',
 		        replace: true,
@@ -365,27 +375,16 @@
 		            }
 		        };
 		        var isAutoSignin = scope.autoSignin && scope.autoSignin.toLowerCase() === 'true';
+                var endpointSettings= endpoint.getSettings();
 		        function routeChangeHandler(event, nextRoute) {
 		            if (isAutoSignin || (nextRoute.$$route && nextRoute.$$route.requireToken)) {
-		                doAuth(event);
+		                endpoint.doAuth(event);
 		            }
-		        };
-		        function stateChangeHandler(event, toState, toParams, fromState, fromParams) {
-		            if (isAutoSignin || (toState && toState.requireToken))
-		                doAuth(event)
-		        }
-
-		        function doAuth(event) {
-		            if (!accessToken.get() || expired(accessToken.get())) {
-		                event.preventDefault();
-		                $window.sessionStorage.setItem('oauthRedirectRoute', $location.path());
-		                endpoint.authorize();
-		            }
-		        }
+		        };		        
 
 		        function init() {
 		            if (scope.tokenStorageHandler) {
-		                tokenStorage = scope.tokenStorageHandler
+		                tokenService.tokenStorage = scope.tokenStorageHandler
 		            }
 		            scope.buttonClass = scope.buttonClass || 'btn btn-primary';
 		            scope.signInText = scope.signInText || 'Sign In';
@@ -403,55 +402,19 @@
 		            endpoint.init(scope);
 		            scope.$on('oauth2:authRequired', function () {
 		                endpoint.authorize();
-		            });
-		            scope.$on('oauth2:authSuccess', function () {
-		                if (scope.silentTokenRedirectUrl.length > 0) {
-		                    if ($location.path().indexOf("/silent-renew") == 0) {
-		                        // A 'child' frame has successfully authorised an access token.
-		                        if (window.top && window.parent && window !== window.top) {
-		                            var hash = hash || window.location.hash;
-		                            if (hash) {
-		                                window.parent.postMessage(hash, location.protocol + "//" + location.host);
-		                            }
-		                        }
-		                    } else {
-		                        // An 'owning' frame has successfully authorised an access token.
-		                        endpoint.renewTokenSilently();
-		                    }
-		                }
-
-		                if (scope.userInfoUrl && scope.userInfoUrl.length > 0) {
-		                    var userInfoUrl = scope.userInfoUrl
-		                    $http.get(userInfoUrl).then(function (userResult) {
-		                        $rootScope.oauth2User = userResult.data;
-		                    }, function (error) {
-		                        console.log(error);
-		                    });
-		                }
-		            });
-		            scope.$on('oauth2:authError', function () {
-		                if ($location.path().indexOf("/silent-renew") == 0 && window.top && window.parent && window !== window.top) {
-		                    // A 'child' frame failed to authorize.
-		                    window.parent.postMessage("oauth2.silentRenewFailure", location.protocol + "//" + location.host);
-		                }
-		                else {
-		                    if (scope.unauthorizedAccessUrl.length > 0) {
-		                        $location.path(scope.unauthorizedAccessUrl);
-		                    }
-		                }
-		            });
-		            scope.$on('oauth2:authExpired', function () {
-		                scope.signedIn = false;
-		                accessToken.destroy();
-		            });
-		            scope.signedIn = accessToken.set() !== null;
-		            $rootScope.$on('$routeChangeStart', routeChangeHandler);
-		            $rootScope.$on('$stateChangeStart', stateChangeHandler);
+		            });	
+		            $rootScope.signedIn = accessToken.set() !== null;
+		            $rootScope.$on('$routeChangeStart', routeChangeHandler);                    
+		            
 		        }
 
-		        scope.$watch('clientId', function (value) { init(); });
+		        scope.$watch('clientId', function (value) {
+                    if(value){
+                        init();                        
+                    }                     
+                });
 
-		        scope.signedIn = false;
+		        $rootScope.signedIn = false;
 
 		        scope.signIn = function () {
 		            $window.sessionStorage.setItem('oauthRedirectRoute', $location.path());
@@ -470,6 +433,7 @@
 
     // App libraries
     angular.module('afOAuth2', [
+      'oauth2.services',       // oauth2 services
       'oauth2.directive',      // login directive
       'oauth2.accessToken',    // access token service
       'oauth2.endpoint',       // oauth endpoint service
@@ -478,5 +442,53 @@
         function ($locationProvider, $httpProvider) {
             $httpProvider.interceptors.push('OAuth2Interceptor');
         }
-    ]);
+    ]).run(["$rootScope", "Endpoint","AccessToken","$location","$window",function($rootScope,Endpoint,AccessToken,$location,$window){
+            var endpointSettings = Endpoint.getSettings();    
+            $rootScope.signedIn = $rootScope.signedIn || AccessToken.set() !== null;
+            $rootScope.$on("$stateChangeStart", function (event, toState) {
+                if ((endpointSettings && endpointSettings.autoSignin) || (toState && toState.data && toState.data.requireToken)) {
+                    Endpoint.doAuth(event);
+                }
+            });
+            $rootScope.$on('oauth2:authSuccess', function () {
+                if (endpointSettings.silentTokenRedirectUrl && endpointSettings.silentTokenRedirectUrl.length > 0) {
+                    if ($location.path().indexOf("/silent-renew") == 0) {
+                        // A 'child' frame has successfully authorised an access token.
+                        if ($window.window.top && $window.window.parent && $window.window !== $window.window.top) {
+                            var hash = hash || $window.window.location.hash;
+                            if (hash) {
+                                $window.window.parent.postMessage(hash, $location.protocol() + "//" + $location.host());
+                            }
+                        }
+                    } else {
+                        // An 'owning' frame has successfully authorised an access token.
+                        Endpoint.renewTokenSilently();
+                    }
+                }
+
+                if (endpointSettings.userInfoUrl && scope.userInfoUrl.length > 0) {
+                    var userInfoUrl = endpointSettings.userInfoUrl
+                    $http.get(userInfoUrl).then(function (userResult) {
+                        $rootScope.oauth2User = userResult.data;
+                    }, function (error) {
+                        console.log(error);
+                    });
+                }
+            });
+            $rootScope.$on('oauth2:authError', function () {
+                if ($location.path().indexOf("/silent-renew") == 0 && $window.window.top && $window.window.parent && $window.window !== $window.window.top) {
+                    // A 'child' frame failed to authorize.
+                    $window.window.parent.postMessage("oauth2.silentRenewFailure", $location.protocol() + "//" + $location.host());
+                }
+                else {
+                    if (endpointSettings.unauthorizedAccessUrl && endpointSettings.unauthorizedAccessUrl.length > 0) {
+                        $location.path(endpointSettings.unauthorizedAccessUrl);
+                    }
+                }
+            });
+            $rootScope.$on('oauth2:authExpired', function () {
+                $rootScope.signedIn = false;
+                AccessToken.destroy();
+            });
+    }]);
 })();
